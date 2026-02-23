@@ -19,6 +19,7 @@ public class hello {
     }
     for (int another = 0; another < ag.length; another++)
       System.out.print("" +ag[another]);
+    just_a_name(i);
   }
   public static int add_operation (int a) {return (a + 1);}
 }
