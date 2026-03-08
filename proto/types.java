@@ -7,6 +7,7 @@ public class types {
   public static void main (String[] ag) {
     if (check_args(ag) != 0)
       return;
+    String[] parts = splitting(ag);
   }
 
   public static int check_args(String[] ag) {
@@ -19,17 +20,29 @@ public class types {
       return (1);
     }
     for (int i = 0; i < ag[0].length(); i++) {
-      if (ag[1].charAt(0) == ag[0].charAt(1)) {
+      if (ag[1].charAt(0) == ag[0].charAt(i)) {
         break;
       }
-      if (i == ag[0].length()) {
+      if (i == ag[0].length() - 1) {
         System.out.println("\u001B[31m" + "Delimiter is not in the String to be splitted" + "\u001B[37m");
         return (1);
       }
     }
+    System.out.println("\u001B[32m" + "LET'S GOOOOOO" + "\u001B[37m");
     System.out.println("To be split -> " +ag[0]);
     System.out.println("Delimiter -> " +ag[1]);
     return (0);
+  }
+
+  public static String[] splitting(String[] ag) {
+    int delim_counter = 0;
+    for (int i = 0; i < ag[0].length(); i++) {
+      if (ag[1].charAt(0) == ag[0].charAt(i)) {
+        delim_counter++;
+      }
+    }
+    String parts = new String[delim_counter + 1];
+    return (parts);
   }
 
 }
