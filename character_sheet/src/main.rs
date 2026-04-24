@@ -1,20 +1,19 @@
-use pdf_writer::{Pdf, Rect, Ref};
+use pdf_writer::{Name, Pdf, Ref, TextStr, types::FieldType};
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Define some indirect reference ids we'll use.
-    let catalog_id = Ref::new(1);
-    let page_tree_id = Ref::new(2);
-    let page_id = Ref::new(3);
-// Write a document catalog and a page tree with one A4 page that uses no resources.
+fn main() -> std::io::Result<()> {
     let mut pdf = Pdf::new();
-    pdf.catalog(catalog_id).pages(page_tree_id);
-    pdf.pages(page_tree_id).kids([page_id]).count(1);
-    pdf.page(page_id)
-        .parent(page_tree_id)
-        .media_box(Rect::new(0.0, 0.0, 595.0, 842.0))
-        .resources();
-    // Finish with cross-reference table and trailer and write to file.
-    std::fs::write("target/empty.pdf", pdf.finish())?;
+
+    let base_font_id: Ref = Ref::new(1);
+    let base_font_name: Name = Name(b"Base");
+
+    let symbols_font_id: Ref = Ref::new(2);
+    let symbols_font_name: Name = Name(b"Symbol");
+
+    let text_field_id: Ref = Ref::new(3);
+    let mut fields = pdf.form_field(text_field_id);
+    fields.partial_name(TextStr("Fields"));
+    fields.field_type(FieldType::Text);
+    fields.text_value(TextStr(""));
+    fields.text_default_value(TextStr(""));
     Ok(())
 }
-

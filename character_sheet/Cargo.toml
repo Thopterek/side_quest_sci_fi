@@ -5,4 +5,3 @@ edition = "2024"
 
 [dependencies]
 pdf-writer = "0.14.0"
-printpdf = "0.9.1"
