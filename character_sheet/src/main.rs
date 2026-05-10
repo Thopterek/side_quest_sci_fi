@@ -27,6 +27,7 @@ fn main() -> std::io::Result<()> {
     fields.field_type(FieldType::Text);
     fields.text_value(TextStr("TextStorage"));
     fields.text_default_value(TextStr("ResetFormValue"));
+    fields.vartext_default_appearance(Str(b"/BasedFont 12 Tf 0 g"));
 
     /*
      * I will have to do a recap on this one
@@ -39,7 +40,7 @@ fn main() -> std::io::Result<()> {
         .style(BorderType::Underline);
     rectange_for_fields
         .appearance_characteristics()
-        .border_color_rgb(0.24, 0.24, 0.24);
+        .border_color_rgb(0.0, 0.0, 0.5);
     rectange_for_fields.flags(AnnotationFlags::PRINT);
     rectange_for_fields.finish();
 
@@ -90,9 +91,13 @@ fn main() -> std::io::Result<()> {
     /*
      * Setting up how they will look
      * tick for shown, empty for hidden
+     * MK vs AP streams to be read about
      */
     let mut button_appearance = Content::new();
     button_appearance.save_state();
+    button_appearance.set_stroke_rgb(0.0, 0.0, 0.5);
+    button_appearance.rect(0.0, 0.0, 30.0, 18.0);
+    button_appearance.stroke();
     button_appearance.begin_text();
     button_appearance.set_fill_gray(0.0);
     button_appearance.set_font(symbols_font_name, 14.0);
@@ -108,9 +113,17 @@ fn main() -> std::io::Result<()> {
         .fonts()
         .pair(symbols_font_name, symbols_font_id);
     on_appearance.finish();
-    // Empty for the off version
-    pdf.form_xobject(radio_hidden_id, &Content::new().finish())
-        .bbox(bounds_of_box);
+
+    let mut off_appearance = Content::new();
+    off_appearance.save_state();
+    off_appearance.set_stroke_rgb(0.0, 0.0, 0.5);
+    off_appearance.rect(0.0, 0.0, 30.0, 18.0);
+    off_appearance.stroke();
+    off_appearance.restore_state();
+    let off_stream = off_appearance.finish();
+    let mut off_xobject = pdf.form_xobject(radio_hidden_id, &off_stream);
+    off_xobject.bbox(bounds_of_box);
+    off_xobject.finish();
 
     /*
      * Creating widget annotations, setting up parent / child relation
@@ -121,11 +134,11 @@ fn main() -> std::io::Result<()> {
         field.parent(radio_group_id);
         let mut annotation = field.into_annotation();
         annotation.rect(rectangle).flags(AnnotationFlags::PRINT);
-        annotation.appearance_state(Name(b"OFF"));
+        annotation.appearance_state(Name(b"Off"));
         let mut full_appearance = annotation.appearance();
         full_appearance.normal().streams().pairs([
             (Name(name), radio_shown_id),
-            (Name(b"OFF"), radio_hidden_id),
+            (Name(b"Off"), radio_hidden_id),
         ]);
     }
 
@@ -175,6 +188,7 @@ fn main() -> std::io::Result<()> {
         .form_flags(FormActionFlags::INCLUDE_EXCLUDE)
         .action_type(ActionType::ResetForm)
         .fields();
+
     push_annotation.finish();
 
     /*
