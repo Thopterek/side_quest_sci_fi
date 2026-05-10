@@ -97,6 +97,65 @@ fn main() -> std::io::Result<()> {
     button_appearance.show(Str(b"4"));
     button_appearance.end_text();
     button_appearance.restore_state();
+    // Symbol font has to be added to stream for on
+    let on_stream = button_appearance.finish();
+    let mut on_appearance = pdf.form_xobject(radio_shown_id, &on_stream);
+    on_appearance.bbox(bounds_of_box);
+    on_appearance
+        .resources()
+        .fonts()
+        .pair(symbols_font_name, symbols_font_id);
+    on_appearance.finish();
+    // Empty for the off version
+    pdf.form_xobject(radio_hidden_id, &Content::new().finish())
+        .bbox(bounds_of_box);
+
+    /*
+     * Creating widget annotations, setting up parent / child relation
+     * then also mapping the sub dictionary to the rest of objects
+     */
+    for (id, rectangle, name) in radio_buttons {
+        let mut field = pdf.form_field(id);
+        field.parent(radio_group_id);
+        let mut annotation = field.into_annotation();
+        annotation.rect(rectangle).flags(AnnotationFlags::PRINT);
+        annotation.appearance_state(Name(b"OFF"));
+        let mut full_appearance = annotation.appearance();
+        full_appearance.normal().streams().pairs([
+            (Name(name), radio_shown_id),
+            (Name(b"OFF"), radio_hidden_id),
+        ]);
+    }
+
+    /*
+     * Dropdown Menu with possible choices
+     * first the standard setting of pieces to use
+     * then showing the choices that can be made
+     */
+    let dropmenu_id = Ref::new(7);
+    let mut dropmenu_field = pdf.form_field(dropmenu_id);
+    dropmenu_field
+        .partial_name(TextStr("choice"))
+        .field_type(FieldType::Choice)
+        .field_flags(FieldFlags::COMBO | FieldFlags::EDIT);
+    dropmenu_field.choice_options().options([
+        TextStr("Barbari"),
+        TextStr("Auxilia"),
+        TextStr("Obywatel"),
+        TextStr("prefer not to say"),
+    ]);
+    let mut drop_annotation = dropmenu_field.into_annotation();
+    drop_annotation
+        .rect(Rect::new(108.0, 690.0, 208.0, 708.0))
+        .flags(AnnotationFlags::PRINT);
+    drop_annotation.finish();
+
+    /*
+     * PDF actions, activated on events
+     * using push buttons -> they don't retain state
+     */
+    let push_id = Ref::new(8);
+    let mut push_field = pdf.form_field(push_id);
 
     Ok(())
 }
