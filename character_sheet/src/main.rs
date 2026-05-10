@@ -1,4 +1,6 @@
-use pdf_writer::types::{AnnotationFlags, BorderType, FieldFlags, FieldType};
+use pdf_writer::types::{
+    ActionType, AnnotationFlags, BorderType, FieldFlags, FieldType, FormActionFlags,
+};
 use pdf_writer::{Content, Finish, Name, Pdf, Rect, Ref, Str, TextStr};
 
 fn main() -> std::io::Result<()> {
@@ -46,17 +48,17 @@ fn main() -> std::io::Result<()> {
     let bounds_of_box = Rect::new(0.0, 0.0, 30.0, 18.0);
     let radio_buttons = [
         (
-            Ref::new(5),
+            Ref::new(20),
             Rect::new(108.0, 710.0, 138.0, 728.0),
             b"ChannelAlpha",
         ),
         (
-            Ref::new(6),
+            Ref::new(21),
             Rect::new(140.0, 710.0, 170.0, 728.0),
             b"Channel_Beta", // it's Like_That because it expects the same len for b"name"
         ),
         (
-            Ref::new(7),
+            Ref::new(22),
             Rect::new(172.0, 710.0, 202.0, 728.0),
             b"ChannelGamma",
         ),
@@ -153,9 +155,67 @@ fn main() -> std::io::Result<()> {
     /*
      * PDF actions, activated on events
      * using push buttons -> they don't retain state
+     * setting up to reset everything
      */
     let push_id = Ref::new(8);
     let mut push_field = pdf.form_field(push_id);
+    push_field
+        .partial_name(TextStr("Button"))
+        .field_type(FieldType::Button)
+        .field_flags(FieldFlags::PUSHBUTTON);
+    let mut push_annotation = push_field.into_annotation();
+    push_annotation
+        .rect(Rect::new(108.0, 670.0, 138.0, 688.0))
+        .flags(AnnotationFlags::PRINT);
+    push_annotation
+        .appearance_characteristics()
+        .border_color_gray(0.5);
+    push_annotation
+        .action()
+        .form_flags(FormActionFlags::INCLUDE_EXCLUDE)
+        .action_type(ActionType::ResetForm)
+        .fields();
+    push_annotation.finish();
 
-    Ok(())
+    /*
+     * Sending the information to reader about
+     * interactive forms that are part of the document
+     */
+    let catalog_id = Ref::new(9);
+    let page_tree_id = Ref::new(10);
+    let mut catalog_setup = pdf.catalog(catalog_id);
+    catalog_setup.pages(page_tree_id).form().fields([
+        text_field_id,
+        radio_group_id,
+        dropmenu_id,
+        push_id,
+    ]);
+    catalog_setup.finish();
+
+    /*
+     * Creation of page and writing of sources
+     */
+    let page_id = Ref::new(11);
+    let mut page = pdf.page(page_id);
+    page.media_box(Rect::new(0.0, 0.0, 595.0, 842.0))
+        .parent(page_tree_id)
+        .resources()
+        .fonts()
+        .pair(base_font_name, base_font_id);
+    page.annotations([
+        text_field_id,
+        radio_buttons[0].0,
+        radio_buttons[1].0,
+        radio_buttons[2].0,
+        dropmenu_id,
+        push_id,
+    ]);
+    page.finish();
+
+    pdf.type1_font(base_font_id).base_font(Name(b"Helvetica"));
+    pdf.type1_font(symbols_font_id)
+        .base_font(Name(b"ZapfDingbats"));
+    pdf.pages(page_tree_id).kids([page_id]).count(1);
+
+    std::fs::write("target/forms.pdf", pdf.finish())
 }
