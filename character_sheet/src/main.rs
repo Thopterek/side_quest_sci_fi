@@ -8,7 +8,7 @@ fn main() -> std::io::Result<()> {
 
     /*
      * Bunch of references, each piece of PDF needs it
-     * and the name to be used for particular ID
+     * and the name to be used for particular ID -> test
      */
     let base_font_id: Ref = Ref::new(1);
     let base_font_name: Name = Name(b"BasedFont");
