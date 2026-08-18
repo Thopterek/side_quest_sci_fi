@@ -1,0 +1,72 @@
+# syntax=docker/dockerfile:1.7
+#
+# Parallax — the backend.
+#
+# This is the only tier that holds database credentials. It owns a connection
+# pool, so N operators cost M connections rather than N; it turns whole-record
+# writes into field-level patches, so two people editing different fields of the
+# same system no longer overwrite each other; and it fans PostgreSQL LISTEN
+# notifications out to clients over SSE so a vault edit shows up everywhere
+# without polling.
+#
+# Unlike the face, this is a plain network service: no GL, no X11, no display.
+
+# ----------------------------------------------------------------- builder --
+FROM rust:1.91-bookworm AS builder
+
+# Only what the server needs. Notably absent: the whole X11/Wayland/GL stack
+# that Dockerfile.app has to carry.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+
+# Compile the dependency graph against stub sources first, so editing src/ does
+# not rebuild axum, tokio and the pool. No BuildKit cache mounts: this bakes the
+# warm layer into the image, which works on a cold CI cache too.
+COPY Cargo.toml ./
+RUN mkdir -p src/core src/db src/server src/bin \
+    && echo 'pub mod core;' > src/lib.rs \
+    && echo '' > src/core/mod.rs \
+    && echo 'fn main() {}' > src/bin/server.rs \
+    && cargo build --release --no-default-features --features server,db --bin parallax-server \
+    && rm -rf src
+
+COPY src ./src
+COPY tests ./tests
+
+# Drop the stub fingerprints so this crate rebuilds while every dependency
+# artifact above is reused.
+RUN rm -f target/release/parallax-server target/release/deps/parallax* \
+    && cargo build --release --no-default-features --features server,db --bin parallax-server \
+    && strip target/release/parallax-server
+
+# ----------------------------------------------------------------- runtime --
+FROM debian:bookworm-slim AS runtime
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        libgssapi-krb5-2 \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN groupadd --gid 10002 parallax \
+    && useradd --uid 10002 --gid 10002 --create-home --shell /usr/sbin/nologin parallax
+
+COPY --from=builder /build/target/release/parallax-server /usr/local/bin/parallax-server
+
+USER parallax
+WORKDIR /home/parallax
+
+# PARALLAX_DATABASE_URL is supplied by compose and carries the password, so it
+# is deliberately not baked in here.
+ENV PARALLAX_BIND=0.0.0.0:8080 \
+    PARALLAX_POOL_SIZE=16 \
+    RUST_LOG=info
+
+EXPOSE 8080
+
+# No shell in the healthcheck: this image has no curl, and adding one to carry a
+# healthcheck would be a larger attack surface than the check is worth. Compose
+# probes /health from the outside instead.
+ENTRYPOINT ["/usr/local/bin/parallax-server"]

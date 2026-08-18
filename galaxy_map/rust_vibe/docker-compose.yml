@@ -1,0 +1,152 @@
+# Parallax — three tiers: database, API server, and the face.
+#
+# Only `server` holds database credentials. The face talks HTTP to it, so an
+# operator's desktop carries nothing worth stealing, and N operators cost one
+# connection pool rather than N connections.
+#
+#   docker compose up -d db server            # backend; run the face natively
+#   docker compose --profile app up --build   # everything, including the GUI
+#   docker compose --profile multi up         # two faces, to watch edits merge
+#   docker compose --profile tools run --rm tests
+#   docker compose --profile tools run --rm psql
+#
+# Linux hosts, before starting the app profile:
+#   xhost +local:docker
+#
+# macOS and Windows have no X11 socket to share. Run db and server in Docker and
+# the face on the host:
+#   PARALLAX_SERVER_URL=http://localhost:8080 \
+#     cargo run --release --no-default-features --features gui,client
+
+name: parallax
+
+services:
+  # ------------------------------------------------------------------ data --
+  db:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.postgres
+    image: parallax/postgres:16
+    environment:
+      POSTGRES_DB: parallax
+      POSTGRES_USER: parallax
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-parallax}
+    # Deliberately not published. The server is the only client now; uncomment
+    # to attach a psql from the host.
+    # ports:
+    #   - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - vault-data:/var/lib/postgresql/data
+    healthcheck:
+      # `pg_isready` reports success while the init scripts are still running,
+      # so the server can win the race and fail its first query. This asks a
+      # question only the finished schema can answer.
+      test: ["CMD-SHELL", "psql -U parallax -d parallax -tAc \"select 1 from pg_views where schemaname='parallax' and viewname='link_edges'\" | grep -q 1"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
+    stop_grace_period: 30s
+
+  # ----------------------------------------------------------------- logic --
+  server:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.server
+    image: parallax/server:0.1.0
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PARALLAX_DATABASE_URL: "host=db port=5432 user=parallax dbname=parallax password=${POSTGRES_PASSWORD:-parallax}"
+      PARALLAX_BIND: "0.0.0.0:8080"
+      # One pool serves every operator. Keep pool size times replica count
+      # comfortably under the database's max_connections.
+      PARALLAX_POOL_SIZE: ${PARALLAX_POOL_SIZE:-16}
+      RUST_LOG: ${RUST_LOG:-info}
+    ports:
+      - "127.0.0.1:${PARALLAX_PORT:-8080}:8080"
+    healthcheck:
+      # The image ships no shell and no curl on purpose, so the binary probes
+      # its own /health over plain TCP instead.
+      test: ["CMD", "/usr/local/bin/parallax-server", "--health-check"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+
+  # ------------------------------------------------------------------ face --
+  app:
+    profiles: ["app", "multi"]
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.app
+    image: parallax/app:0.1.0
+    depends_on:
+      server:
+        condition: service_healthy
+    environment:
+      # No database credentials here, by design. This image is not even built
+      # with the `db` feature, so it has no Postgres driver linked in.
+      PARALLAX_SERVER_URL: "http://server:8080"
+      PARALLAX_USER: ${PARALLAX_USER:-operator}
+      DISPLAY: ${DISPLAY:-:0}
+      WAYLAND_DISPLAY: ${WAYLAND_DISPLAY:-}
+      XDG_RUNTIME_DIR: /tmp/xdg
+      RUST_LOG: ${RUST_LOG:-warn}
+    volumes:
+      # The host's display socket, read-only: the face draws through it and has
+      # no business writing to it.
+      - /tmp/.X11-unix:/tmp/.X11-unix:ro
+      - ${XAUTHORITY:-/dev/null}:/home/parallax/.Xauthority:ro
+    tmpfs:
+      - /tmp/xdg:uid=10001,gid=10001,mode=0700
+    init: true
+    stdin_open: true
+    tty: true
+
+  # A second face under a different identity. Open both, edit different fields
+  # of the same system, and watch each appear in the other.
+  app2:
+    profiles: ["multi"]
+    extends:
+      service: app
+    environment:
+      PARALLAX_USER: ${PARALLAX_USER_2:-operator-2}
+
+  # ----------------------------------------------------------------- tools --
+  psql:
+    profiles: ["tools"]
+    image: parallax/postgres:16
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD:-parallax}
+    entrypoint:
+      ["psql", "-h", "db", "-U", "parallax", "-d", "parallax",
+       "-v", "search_path=parallax,public"]
+
+  # The full suite, including concurrency and PostgreSQL integration tests,
+  # against a throwaway database rather than the one holding your vault.
+  tests:
+    profiles: ["tools"]
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.server
+      target: builder
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PARALLAX_TEST_DATABASE_URL: "host=db port=5432 user=parallax dbname=parallax_test password=${POSTGRES_PASSWORD:-parallax}"
+    working_dir: /build
+    entrypoint:
+      ["cargo", "test", "--no-default-features",
+       "--features", "server,db,client", "--", "--test-threads=1"]
+
+volumes:
+  vault-data:
+    driver: local
