@@ -10,6 +10,9 @@
 #   docker compose --profile tools run --rm tests
 #   docker compose --profile tools run --rm psql
 #
+# On first start the server mints an admin link and prints it once:
+#   docker compose logs server | grep "admin link"
+#
 # Linux hosts, before starting the app profile:
 #   xhost +local:docker
 #
@@ -61,6 +64,9 @@ services:
     environment:
       PARALLAX_DATABASE_URL: "host=db port=5432 user=parallax dbname=parallax password=${POSTGRES_PASSWORD:-parallax}"
       PARALLAX_BIND: "0.0.0.0:8080"
+      # Share links are rendered against this, so it must be the address the
+      # recipients can actually reach — not the address the server binds.
+      PARALLAX_BASE_URL: ${PARALLAX_BASE_URL:-http://localhost:8080}
       # One pool serves every operator. Keep pool size times replica count
       # comfortably under the database's max_connections.
       PARALLAX_POOL_SIZE: ${PARALLAX_POOL_SIZE:-16}
@@ -91,7 +97,9 @@ services:
       # No database credentials here, by design. This image is not even built
       # with the `db` feature, so it has no Postgres driver linked in.
       PARALLAX_SERVER_URL: "http://server:8080"
-      PARALLAX_USER: ${PARALLAX_USER:-operator}
+      # The share link this face opens with. Empty means the anonymous stage:
+      # Sol, and nothing else.
+      PARALLAX_TOKEN: ${PARALLAX_TOKEN:-}
       DISPLAY: ${DISPLAY:-:0}
       WAYLAND_DISPLAY: ${WAYLAND_DISPLAY:-}
       XDG_RUNTIME_DIR: /tmp/xdg
@@ -114,7 +122,7 @@ services:
     extends:
       service: app
     environment:
-      PARALLAX_USER: ${PARALLAX_USER_2:-operator-2}
+      PARALLAX_TOKEN: ${PARALLAX_TOKEN_2:-}
 
   # ----------------------------------------------------------------- tools --
   psql:

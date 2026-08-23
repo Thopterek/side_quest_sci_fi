@@ -4,6 +4,7 @@
 
 use std::sync::Arc;
 
+use parallax::core::grant::{share_link, Capability, Scope};
 use parallax::server::{listen, router, AppState, Repo};
 
 /// `--health-check`: probe our own `/health` and exit 0 or 1.
@@ -68,6 +69,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let url = std::env::var("PARALLAX_DATABASE_URL")
         .unwrap_or_else(|_| "host=localhost user=postgres dbname=parallax".into());
     let bind = std::env::var("PARALLAX_BIND").unwrap_or_else(|_| "0.0.0.0:8080".into());
+    // Used to render share links, so they point at wherever this is reachable
+    // rather than at the address it happens to bind.
+    let base_url = std::env::var("PARALLAX_BASE_URL")
+        .unwrap_or_else(|_| format!("http://{}", bind.replace("0.0.0.0", "localhost")));
     let pool_size: usize = std::env::var("PARALLAX_POOL_SIZE")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -83,7 +88,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (changes, _) = tokio::sync::broadcast::channel(256);
     listen::spawn(url.clone(), changes.clone());
 
-    let app = router(AppState { repo: Arc::new(repo), changes })
+    let repo = Arc::new(repo);
+
+    // On an unclaimed vault, mint an admin link and print it once. Without this
+    // there is no way in: every route needs a grant, and only an admin can mint
+    // one. Printed rather than stored anywhere retrievable, so it behaves like
+    // the token it is.
+    match repo.list_grants().await {
+        Ok(grants) if !grants.iter().any(|g| g.capability == Capability::Admin) => {
+            match repo
+                .mint_grant("Host", Capability::Admin, &Scope::All, None)
+                .await
+            {
+                Ok(minted) => {
+                    let link = share_link(&base_url, &minted.token);
+                    tracing::warn!("no admin grant existed; minted one for this vault");
+                    // Deliberately on stdout, not through the log filter: this
+                    // is shown exactly once and must not be lost to RUST_LOG.
+                    println!("\n  Parallax admin link (shown once, store it now):\n    {link}\n");
+                }
+                Err(e) => tracing::error!("could not mint the first admin grant: {e}"),
+            }
+        }
+        Ok(_) => {}
+        Err(e) => tracing::error!("could not check for an admin grant: {e}"),
+    }
+
+    let app = router(AppState { repo, changes, base_url })
         .layer(tower_http::trace::TraceLayer::new_for_http())
         // The face is a native client, but the wasm build is served from a
         // different origin, so it needs this.

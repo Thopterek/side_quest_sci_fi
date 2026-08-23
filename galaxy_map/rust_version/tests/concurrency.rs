@@ -17,6 +17,7 @@ use parallax::core::model::{Arm, PlanetRecord, Record};
 use parallax::core::patch::{PlanetRecordPatch, RecordPatch};
 use parallax::core::store::{Settings, VaultStore};
 use parallax::db::PgStore;
+use parallax::core::grant::{Capability, Scope};
 use parallax::server::{Repo, RepoError};
 
 fn url() -> Option<String> {
@@ -33,6 +34,15 @@ async fn fresh() -> Option<(Repo, String)> {
     repo.migrate().await.expect("migrate");
     repo.truncate_all().await.expect("truncate");
     repo.seed(true).await.expect("seed");
+
+    // Reads are scoped to a grant, so the operators in these tests need one.
+    // Each stands for a person holding a share link over the whole vault —
+    // these tests are about edits colliding, not about what a stage contains.
+    for who in ["alice", "bob", "carol"] {
+        repo.upsert_grant_for_test(who, Capability::Admin, &Scope::All)
+            .await
+            .expect("grant");
+    }
     Some((repo, url))
 }
 

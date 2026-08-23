@@ -1,0 +1,25 @@
+# syntax=docker/dockerfile:1.7
+#
+# Parallax — the vault database.
+#
+# Stock PostgreSQL with the schema baked in. The application also migrates on
+# startup and schema.sql is idempotent, so the two cannot conflict; baking it
+# means the database is queryable before the app's first connection, which is
+# what the compose healthcheck depends on.
+
+FROM postgres:16-bookworm
+
+# Collation is pinned so ORDER BY on hostnames is stable across hosts. Without
+# it, initdb inherits the daemon's locale and the vault list can reorder between
+# machines.
+ENV POSTGRES_INITDB_ARGS="--encoding=UTF8 --locale=C"
+
+# These run once, in filename order, the first time the cluster initialises.
+COPY docker/postgres-init/05-config.sh        /docker-entrypoint-initdb.d/05-config.sh
+COPY src/db/schema.sql                        /docker-entrypoint-initdb.d/10-schema.sql
+COPY docker/postgres-init/20-grants.sql       /docker-entrypoint-initdb.d/20-grants.sql
+COPY docker/postgres-init/30-test-db.sh       /docker-entrypoint-initdb.d/30-test-db.sh
+COPY docker/postgres-init/postgresql.tuning.conf /etc/postgresql/parallax.conf
+
+# No custom CMD: the stock entrypoint is what applies the init scripts, and
+# 05-config.sh wires the tuning file in via an include.

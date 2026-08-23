@@ -15,6 +15,7 @@ set search_path to parallax, public;
 -- Must match core::model::slug exactly. There is a test asserting it does.
 create or replace function slugify(txt text) returns text
   language sql immutable strict parallel safe
+  set search_path = parallax, pg_temp
 as $$
   select trim(both '-' from regexp_replace(lower(txt), '[^a-z0-9]+', '-', 'g'))
 $$;
@@ -259,3 +260,111 @@ create or replace view system_summary as
          s.source,
          (select count(*) from planets p where p.system_id = s.id) as planet_count
     from systems s;
+
+-- ------------------------------------------------------------------ grants --
+
+-- Capability links, in place of accounts.
+--
+-- The host mints a link; whoever holds it sees exactly one stage of the vault.
+-- There is no registration, no password, no identity — the link *is* the
+-- credential, and what it can see is a property of the grant rather than of a
+-- person. A group shares one link and therefore one view.
+--
+-- The token itself is never stored. Only its SHA-256 lands here, so a database
+-- dump does not hand out working links, and the plaintext exists exactly once:
+-- in the response that created it.
+create table if not exists grants (
+  id            text primary key,
+  -- Hex SHA-256 of the bearer token. Empty string for the anonymous grant,
+  -- which is reached by presenting no token at all.
+  token_hash    text not null,
+  label         text not null default '',
+  -- read  : may view its stage
+  -- write : may also edit dossiers and add systems within its stage
+  -- admin : may see everything and mint further grants
+  capability    text not null default 'read',
+  -- all     : the whole vault
+  -- systems : an explicit list
+  -- tag     : everything carrying a tag, so a stage can be curated from notes
+  scope_kind    text not null default 'systems',
+  scope_tag     text,
+  scope_systems text[] not null default '{}',
+  created_at    timestamptz not null default now(),
+  expires_at    timestamptz,
+  revoked_at    timestamptz,
+  last_used_at  timestamptz,
+  use_count     bigint not null default 0,
+
+  constraint grants_capability_known check (capability in ('read','write','admin')),
+  constraint grants_scope_kind_known check (scope_kind in ('all','systems','tag')),
+  -- A tag-scoped grant without a tag would silently show nothing, which reads
+  -- as a bug rather than as a deliberately empty stage.
+  constraint grants_tag_scope_has_tag check (scope_kind <> 'tag' or btrim(coalesce(scope_tag,'')) <> ''),
+  -- Only 'all' may be paired with admin; an admin restricted to a subset is a
+  -- contradiction that would be easy to create by mistake.
+  constraint grants_admin_sees_all check (capability <> 'admin' or scope_kind = 'all')
+);
+
+-- One row per live token. The anonymous grant is exempt: it has no token.
+create unique index if not exists grants_token_hash_key
+  on grants (token_hash) where token_hash <> '';
+
+create index if not exists grants_live_idx
+  on grants (revoked_at, expires_at);
+
+-- What a first-time visitor sees: Sol, and nothing else.
+--
+-- Editable by the host — widen `scope_systems`, or point it at a tag, to change
+-- what the public stage contains without touching any code.
+insert into grants (id, token_hash, label, capability, scope_kind, scope_systems)
+  values ('anonymous', '', 'Anyone with the address', 'read', 'systems', array['sol'])
+  on conflict (id) do nothing;
+
+-- Resolve a bearer token to a live grant, or nothing.
+--
+-- Expiry and revocation are checked here rather than in application code, so
+-- every query that joins through this function gets them for free.
+create or replace function live_grant(p_token_hash text)
+  returns setof parallax.grants
+  language sql stable
+  -- Pinned, and every reference below is schema-qualified. A security-relevant
+  -- function that resolves names through the caller's search_path can be made
+  -- to read a table the caller controls instead of this one.
+  set search_path = parallax, pg_temp
+as $$
+  select * from parallax.grants
+   where token_hash = p_token_hash
+     and token_hash <> ''
+     and revoked_at is null
+     and (expires_at is null or expires_at > now())
+$$;
+
+-- The set of systems a grant may see.
+--
+-- This is the single enforcement point. Every read path joins through it, so a
+-- stage cannot leak by someone forgetting a WHERE clause in one query.
+--
+-- Sol is always included: it is the origin of the coordinate system, every
+-- distance in the application is measured from it, and a cube without it has no
+-- anchor. It is a landmark, not a secret.
+create or replace function visible_systems(p_grant_id text)
+  returns table (system_id text)
+  language sql stable
+  -- Same reasoning as live_grant, and more sharply: this function *is* the
+  -- access boundary. It must not be redirectable by a connection setting.
+  set search_path = parallax, pg_temp
+as $$
+  select s.id
+    from parallax.systems s
+    join parallax.grants g on g.id = p_grant_id
+   where g.revoked_at is null
+     and (g.expires_at is null or g.expires_at > now())
+     and (
+          g.scope_kind = 'all'
+       or s.origin
+       or (g.scope_kind = 'systems' and s.id = any (g.scope_systems))
+       or (g.scope_kind = 'tag' and exists (
+             select 1 from parallax.system_tags t
+              where t.system_id = s.id and t.tag = lower(g.scope_tag)))
+     )
+$$;

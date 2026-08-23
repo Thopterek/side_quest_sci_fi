@@ -83,6 +83,67 @@ Verified end to end against a live server — two simultaneous `PATCH`es from
 different operators, one setting `imperial_name` and `arm`, the other
 `population`, all three fields survive.
 
+### Auth: capability links, not accounts
+
+There is no registration and no password. The host mints a link; whoever holds
+it sees exactly one **stage** of the vault. What a link can see is a property of
+the grant, not of a person, so handing the same link to five people gives five
+people the same view — which is the intent, and is why a group needs no group
+management.
+
+| | sees | may |
+| --- | --- | --- |
+| no link | Sol, and nothing else | look |
+| a read link | its stage | look, move its own cursor |
+| a write link | its stage | also edit dossiers within it |
+| an admin link | everything | also mint and revoke links |
+
+A stage is defined one of three ways:
+
+* **`all`** — the whole vault.
+* **`systems`** — an explicit list of ids.
+* **`tag`** — everything carrying a tag, so a stage is curated from the notes
+  themselves and does not go stale as the vault grows. Tag a few systems
+  `#published` and the public stage maintains itself.
+
+Sol is always visible. It is the origin every distance is measured from, and a
+cube without it has no anchor — a landmark, not a secret.
+
+On first start against a fresh vault the server mints an admin link and prints
+it once, because every route needs a grant and only an admin can mint one:
+
+```
+  Parallax admin link (shown once, store it now):
+    http://localhost:8080/v/pxv_1f3a…
+```
+
+```sh
+# Curate a public stage from the notes, good for a month
+curl -X POST localhost:8080/grants -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $ADMIN" \
+  -d '{"label":"Public tour","capability":"read",
+       "scope":{"kind":"tag","tag":"published"},"expires_in_days":30}'
+```
+
+Things that follow from this design, stated rather than discovered later:
+
+* **A link is a bearer token.** Anyone it is forwarded to has the same access.
+  That is the point for a group, and the reason to set `expires_in_days`.
+* **Only the SHA-256 is stored.** A database dump hands out no working links,
+  and a minted token is shown exactly once because it cannot be recovered.
+* **Enforcement is in SQL.** Every read joins `parallax.visible_systems`, so a
+  withheld system never reaches the process, let alone the wire — as opposed to
+  being fetched and then not drawn, which is not access control. Both that
+  function and `live_grant` pin their `search_path`, because a security-relevant
+  function that resolves names through the caller's is redirectable.
+* **A withheld system 404s rather than 403s**, so ids cannot be enumerated by
+  probing.
+* **Notes are shared as written.** A visible dossier containing `[[TRAPPIST-1]]`
+  carries that name even when TRAPPIST-1 is withheld. No row leaks — no
+  coordinates, no planets — but the name does. Curating a stage is editorial as
+  well as technical; stripping links from an operator's own prose would be
+  worse. Pinned as a test so it stays a known property.
+
 ### API
 
 ```
@@ -92,9 +153,13 @@ PUT    /systems/{id}                      refresh from the archive
 DELETE /systems/{id}
 PATCH  /systems/{id}/record               field-level, merges
 PATCH  /systems/{id}/planets/{p}/record
-PUT    /settings                          per operator
-POST   /seed
+PUT    /settings                          per grant
+POST   /seed                              admin
 GET    /events                            SSE change feed
+GET    /whoami                            what this link is and may do
+GET    /grants                            admin
+POST   /grants                            admin — mints a link, shown once
+DELETE /grants/{id}                       admin — takes effect immediately
 ```
 
 ## Docker
@@ -177,7 +242,7 @@ vault semantics, the archive parser — has no egui dependency and is unit teste
 cargo test --no-default-features            # core only: no database, no window
 
 PARALLAX_TEST_DATABASE_URL="host=localhost user=postgres dbname=parallax" \
-  cargo test --features gui,db,client,server -- --test-threads=1   # 147 tests
+  cargo test --features gui,db,client,server -- --test-threads=1   # 190 tests
 ```
 
 The PostgreSQL tests skip themselves when that variable is unset, so a clean
@@ -224,6 +289,59 @@ src/app.rs           layout, clock, honest-scale strip
 builds; `MemoryStore` implements it for wasm, for tests, and as the fallback
 when a database is unreachable. Both honour the same dossier rule, and the same
 assertions are run against each.
+
+## Responsiveness
+
+Measured rather than assumed, and the first measurement was misleading.
+
+A load probe showed read throughput flat at ~120 req/s whether one client was
+connected or thirty-two, which looks exactly like lock contention. The suspect
+was `touch_grant`, which ran an `UPDATE` on a single shared `grants` row on
+every authenticated request. Detaching and sampling it changed almost nothing —
+and `nproc` was **1**. The server, the load generator and PostgreSQL were
+sharing one core, so concurrency could not have helped. The flat line was a
+measurement artifact, not contention.
+
+`touch_grant` is still detached and sampled to at most once per grant per
+minute, because on a real host an `UPDATE` per read is worth avoiding — but it
+was never the bottleneck. `use_count` therefore counts minutes in which a link
+was used, not requests, which is the more useful number anyway.
+
+The cost was in SQL. `snapshot` joined through `visible_systems` three times per
+read, so the planner re-ran the whole access boundary — grant lookup, scope
+test, and for a tag scope a regexp over every system's notes — once per query:
+
+| | database time per vault read |
+| --- | --- |
+| three joins through the function | 6.06 ms |
+| resolve the id set once, then index lookups | 1.55 ms |
+
+End to end that took a read from 8.7 ms to 7.1 ms and throughput from 121 to
+155 req/s, on one core, with identical results.
+
+Three things fixed on the client side:
+
+* **The face never learned of other people's edits.** The server had fanned
+  PostgreSQL notifications out over SSE at `/events` since the split, but
+  nothing consumed them, so a second operator's rename was invisible until
+  restart. `client::events` now watches the stream on a thread of its own.
+* **The first version of that listener never fired.** It used a trailing-edge
+  debounce whose timer was only checked after the *next* line arrived, and
+  `read_line` blocks — so on a quiet stream the reload never happened. It is
+  leading-edge now: the first change fires immediately, further ones inside
+  300 ms are dropped. Zero added latency for a single edit, and a burst of
+  twenty collapses to a handful of reloads. Both properties are pinned by tests
+  against a live server.
+* **Startup blocked on the network.** Backend selection probed the server with
+  `GET /health` — five second connect timeout — on the UI thread inside `new()`,
+  so an unreachable server froze the window before it opened, every launch. The
+  probe was redundant: the worker thread already calls `migrate()` and reports
+  failure asynchronously. Selection is now made from environment variables and
+  is instant.
+
+Nothing else on the render path touches the network or the database: all I/O
+goes through `StoreHandle`, which owns a worker thread, and the frame loop only
+drains a channel.
 
 ## Performance
 
@@ -302,8 +420,14 @@ ships with egui's defaults so it has no asset dependency. To use Plex, drop the
 
 Everything here has been compiled with `rustc 1.91`, run, and tested:
 
-* 116 unit, 16 concurrency and 15 PostgreSQL integration tests pass — 147 in
-  total, with no warnings.
+* 137 unit, 22 auth, 16 concurrency and 15 PostgreSQL integration tests pass —
+  190 in total, with no warnings.
+* Both release binaries have been built and run: the server migrates a fresh
+  database, seeds it, answers its own health check, mints a working share link,
+  and serves 1 / 6 / 13 systems to an anonymous visitor, a tag-scoped link and
+  an admin respectively.
+* The auth tests run over real HTTP against real PostgreSQL, including a check
+  that a hostile `search_path` cannot redirect the access boundary.
 * Each tier builds in isolation: the face without `db`, the server without
   `gui`. That is what makes the image split real rather than cosmetic.
 * The concurrent-merge behaviour was confirmed against a running server, not
