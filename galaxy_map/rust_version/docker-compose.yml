@@ -152,7 +152,10 @@ services:
       PARALLAX_TEST_DATABASE_URL: "host=db port=5432 user=parallax dbname=parallax_test password=${POSTGRES_PASSWORD:-parallax}"
     working_dir: /build
     entrypoint:
-      ["cargo", "test", "--no-default-features",
+      # --locked for the same reason the images use it, and the feature set
+      # matches what the server image was built with. The gui feature is absent
+      # because this stage has no GL or X11 libraries.
+      ["cargo", "test", "--locked", "--no-default-features",
        "--features", "server,db,client", "--", "--test-threads=1"]
 
 volumes:

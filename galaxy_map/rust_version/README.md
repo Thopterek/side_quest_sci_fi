@@ -166,6 +166,7 @@ DELETE /grants/{id}                       admin — takes effect immediately
 
 ```sh
 docker compose up -d db server            # backend only; run the face natively
+docker compose logs server | grep "admin link"    # PowerShell: | Select-String
 docker compose --profile app up --build   # everything, including the GUI
 docker compose --profile multi up         # two faces, to watch edits merge
 docker compose --profile tools run --rm tests
@@ -192,7 +193,14 @@ PARALLAX_SERVER_URL=http://localhost:8080 \
 
 Details worth knowing. Both Rust images compile the dependency graph against
 stub sources before copying `src/`, so editing code does not rebuild axum or
-eframe. The database tuning is applied with an `include` appended during init
+eframe — and both then **restamp the copied sources** before building. That is
+not cosmetic: Docker's `COPY` preserves mtimes from the build context, so files
+checked out weeks ago arrive *older* than the stub artifacts compiled seconds
+earlier, and cargo decides freshness by mtime. Without the restamp it links the
+stub library and the build fails with `could not find grant in core`. Both
+images also copy `Cargo.lock` and build `--locked`, so an image gets the
+dependency versions the suite was tested against rather than whatever resolves
+today. The database tuning is applied with an `include` appended during init
 rather than `-c` flags, because the official entrypoint restarts the server
 after init scripts run. The database healthcheck does not use `pg_isready` —
 that reports success while init scripts are still executing, so it asks for the

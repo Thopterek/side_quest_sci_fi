@@ -26,12 +26,16 @@ WORKDIR /build
 # does not rebuild eframe, winit and glow — which is most of the six minutes.
 # Deliberately no BuildKit cache mounts: this way the warm layer is baked into
 # the image and works on any builder, including CI with a cold cache.
-COPY Cargo.toml ./
+# The lock file travels with the manifest. Without it the image resolves
+# dependencies afresh and can pick up versions the test suite never saw;
+# `--locked` below then makes a stale lock a loud failure rather than a silent
+# upgrade.
+COPY Cargo.toml Cargo.lock ./
 RUN mkdir -p src/core src/db src/ui \
     && echo 'pub mod core;' > src/lib.rs \
     && echo '' > src/core/mod.rs \
     && echo 'fn main() {}' > src/main.rs \
-    && cargo build --release --no-default-features --features gui,client \
+    && cargo build --locked --release --no-default-features --features gui,client \
     && rm -rf src
 
 # The real sources. Everything above this line stays cached.
@@ -39,10 +43,12 @@ COPY src ./src
 COPY tests ./tests
 COPY examples ./examples
 
-# Drop the stub fingerprints so cargo rebuilds this crate but keeps every
-# dependency artifact from the layer above.
-RUN rm -f target/release/parallax target/release/deps/parallax* \
-    && cargo build --release --no-default-features --features gui,client \
+# See the note in Dockerfile.server: Docker's COPY preserves build-context
+# mtimes, which can be older than the stub artifacts above, and cargo decides
+# freshness by mtime. Restamping the sources is what makes the cached dependency
+# layer safe to reuse.
+RUN find src tests examples -name '*.rs' -exec touch {} + \
+    && cargo build --locked --release --no-default-features --features gui,client \
     && strip target/release/parallax
 
 # ----------------------------------------------------------------- runtime --
@@ -65,10 +71,12 @@ COPY --from=builder /build/target/release/parallax /usr/local/bin/parallax
 USER parallax
 WORKDIR /home/parallax
 
+# LIBGL_ALWAYS_SOFTWARE makes Mesa fall back to software rendering when no GPU
+# is passed through, so the face starts on a headless host instead of failing to
+# find GLX. The comment sits above the instruction rather than inside it: a `#`
+# line within a continuation is handled inconsistently across builders.
 ENV PARALLAX_SERVER_URL="http://localhost:8080" \
     RUST_LOG=warn \
-    # Mesa falls back to software rendering when no GPU is passed through, so
-    # the app starts on a headless host instead of failing to find GLX.
     LIBGL_ALWAYS_SOFTWARE=1
 
 ENTRYPOINT ["/usr/local/bin/parallax"]

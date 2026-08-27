@@ -25,21 +25,36 @@ WORKDIR /build
 # Compile the dependency graph against stub sources first, so editing src/ does
 # not rebuild axum, tokio and the pool. No BuildKit cache mounts: this bakes the
 # warm layer into the image, which works on a cold CI cache too.
-COPY Cargo.toml ./
+# The lock file travels with the manifest. Without it the image resolves
+# dependencies afresh and can pick up versions the test suite never saw;
+# `--locked` below then makes a stale lock a loud failure rather than a silent
+# upgrade.
+COPY Cargo.toml Cargo.lock ./
 RUN mkdir -p src/core src/db src/server src/bin \
     && echo 'pub mod core;' > src/lib.rs \
     && echo '' > src/core/mod.rs \
     && echo 'fn main() {}' > src/bin/server.rs \
-    && cargo build --release --no-default-features --features server,db --bin parallax-server \
+    && cargo build --locked --release --no-default-features --features server,db --bin parallax-server \
     && rm -rf src
 
 COPY src ./src
 COPY tests ./tests
 
-# Drop the stub fingerprints so this crate rebuilds while every dependency
-# artifact above is reused.
-RUN rm -f target/release/parallax-server target/release/deps/parallax* \
-    && cargo build --release --no-default-features --features server,db --bin parallax-server \
+# Restamp before building, and do not hand-delete artifacts.
+#
+# Two things conspire otherwise. Docker's COPY preserves mtimes from the build
+# context, so freshly copied sources are routinely *older* than the stub
+# artifacts compiled in the layer above. Cargo's freshness check is mtime-based,
+# so it considers the stub library up to date and links it — and the build fails
+# with `could not find grant in core`, because the stub lib is what got linked.
+#
+# An earlier version tried to force a rebuild by deleting
+# `target/release/deps/parallax*`. That glob does not match
+# `libparallax-<hash>.rlib`, so the stub library survived anyway. Touching the
+# sources is the honest fix: it restores the invariant cargo actually relies on,
+# and lets its own dependency tracking decide what to rebuild.
+RUN find src tests -name '*.rs' -exec touch {} + \
+    && cargo build --locked --release --no-default-features --features server,db --bin parallax-server \
     && strip target/release/parallax-server
 
 # ----------------------------------------------------------------- runtime --
