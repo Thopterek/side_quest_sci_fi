@@ -65,7 +65,7 @@ With every client talking to PostgreSQL directly:
 
 * **Dossier edits destroyed each other.** `save_record` wrote all four dossier
   columns from a stale in-memory copy, so two operators editing *different*
-  fields of the same system lost one edit entirely. Not a rare race — 
+  fields of the same system lost one edit entirely. Not a rare race —
   deterministic. `tests/concurrency.rs` keeps the failing scenario as
   `whole_row_writes_lose_a_concurrent_edit` so the regression stays documented.
 * **`settings` was a global singleton**, so two operators shared one cursor and
