@@ -495,3 +495,86 @@ api_test!(a_burst_of_edits_coalesces_into_few_reloads, |base, repo| {
     assert!(n <= 8, "20 edits should not mean 20 reloads, got {n}");
     drop(listener);
 });
+
+/* ------------------------------------------------------------ share link -- */
+
+api_test!(opening_a_share_link_in_a_browser_lands_somewhere_useful, |base, repo| {
+    // Regression: `share_link` produced /v/<token> from the beginning, but no
+    // route served it, so every link the host handed out answered 404.
+    let token = mint(&repo, Capability::Read, Scope::Tag { tag: "habitable-zone".into() }).await;
+    let link = parallax::core::grant::share_link(&base, &token);
+
+    let r = reqwest::get(&link).await.expect("open the link");
+    assert_eq!(r.status(), 200, "a live share link must not 404");
+    let html = r.text().await.expect("body");
+
+    assert!(html.contains("<!doctype html"), "a browser should get a page");
+    assert!(html.contains(&token), "the page must hand over the token to paste");
+    assert!(html.contains("PARALLAX_SERVER_URL"), "and say how to use it");
+    assert!(html.contains("habitable-zone"), "and name the stage");
+});
+
+api_test!(a_revoked_link_says_so_rather_than_looking_like_a_dead_server, |base, repo| {
+    let token = mint(&repo, Capability::Read, Scope::All).await;
+    let id = repo
+        .grant_by_token_hash(&hash_token(&token))
+        .await
+        .expect("lookup")
+        .expect("live")
+        .id;
+    repo.revoke_grant(&id).await.expect("revoke");
+
+    let r = reqwest::get(parallax::core::grant::share_link(&base, &token))
+        .await
+        .expect("open");
+    assert_eq!(r.status(), 404);
+    let html = r.text().await.expect("body");
+    assert!(html.contains("not valid"), "the recipient should learn why");
+});
+
+api_test!(the_landing_page_escapes_a_label_rather_than_rendering_it, |base, repo| {
+    let minted = repo
+        .mint_grant(
+            "<script>alert(1)</script>",
+            Capability::Read,
+            &Scope::All,
+            None,
+        )
+        .await
+        .expect("mint");
+    let html = reqwest::get(parallax::core::grant::share_link(&base, &minted.token))
+        .await
+        .expect("open")
+        .text()
+        .await
+        .expect("body");
+    assert!(!html.contains("<script>alert"), "label was interpolated raw");
+    assert!(html.contains("&lt;script&gt;"), "label should be escaped");
+});
+
+api_test!(the_base_url_explains_itself_instead_of_answering_404, |base, repo| {
+    // Regression: opening http://host:8080/ met a bare 404, which is
+    // indistinguishable from a container that never started.
+    let _ = repo;
+    let r = reqwest::get(&base).await.expect("open the base URL");
+    assert_eq!(r.status(), 200, "the front door must not 404");
+    let html = r.text().await.expect("body");
+    assert!(html.contains("<!doctype html"));
+    assert!(html.contains("server is running"), "it should say the server is up");
+    assert!(html.contains("ADMIN LINK"), "and how the host gets in");
+});
+
+api_test!(the_index_discloses_nothing_beyond_the_public_stage, |base, repo| {
+    // It is reachable without a token, so it must not leak the vault's size or
+    // contents. The seed vault has 13 systems; anonymous sees 1.
+    let _ = repo;
+    let html = reqwest::get(&base).await.expect("open").text().await.expect("body");
+    assert!(html.contains("<strong>1</strong>"), "should report the anonymous count");
+    // Matched against the rendered count, not a bare "13": the stylesheet
+    // contains `letter-spacing:.13em`, and asserting on the loose substring
+    // failed on that rather than on any leak.
+    assert!(!html.contains("<strong>13</strong>"), "must not disclose the full vault size");
+    for withheld in ["TRAPPIST-1", "GJ 699", "Kestrel"] {
+        assert!(!html.contains(withheld), "leaked {withheld}");
+    }
+});

@@ -11,7 +11,8 @@
 #   docker compose --profile tools run --rm psql
 #
 # On first start the server mints an admin link and prints it once:
-#   docker compose logs server | grep "admin link"
+#   docker compose logs server | grep "ADMIN LINK"
+#   PowerShell:  docker compose logs server | Select-String "pxv_"
 #
 # Linux hosts, before starting the app profile:
 #   xhost +local:docker

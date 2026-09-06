@@ -105,7 +105,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     tracing::warn!("no admin grant existed; minted one for this vault");
                     // Deliberately on stdout, not through the log filter: this
                     // is shown exactly once and must not be lost to RUST_LOG.
-                    println!("\n  Parallax admin link (shown once, store it now):\n    {link}\n");
+                    //
+                    // The label and the URL share one line on purpose. Split
+                    // across two, the obvious `grep "admin link"` matches the
+                    // header and hides the very thing it was run to find —
+                    // which is exactly what happened to the first person who
+                    // followed the documented command.
+                    println!();
+                    println!("  PARALLAX ADMIN LINK (shown once, store it now): {link}");
+                    println!();
                 }
                 Err(e) => tracing::error!("could not mint the first admin grant: {e}"),
             }

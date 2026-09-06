@@ -65,7 +65,7 @@ With every client talking to PostgreSQL directly:
 
 * **Dossier edits destroyed each other.** `save_record` wrote all four dossier
   columns from a stale in-memory copy, so two operators editing *different*
-  fields of the same system lost one edit entirely. Not a rare race —
+  fields of the same system lost one edit entirely. Not a rare race — 
   deterministic. `tests/concurrency.rs` keeps the failing scenario as
   `whole_row_writes_lose_a_concurrent_edit` so the regression stays documented.
 * **`settings` was a global singleton**, so two operators shared one cursor and
@@ -113,9 +113,11 @@ On first start against a fresh vault the server mints an admin link and prints
 it once, because every route needs a grant and only an admin can mint one:
 
 ```
-  Parallax admin link (shown once, store it now):
-    http://localhost:8080/v/pxv_1f3a…
+  PARALLAX ADMIN LINK (shown once, store it now): http://localhost:8080/v/pxv_1f3a…
 ```
+
+Label and URL share one line deliberately. Split across two, the obvious
+`grep "admin link"` matches the header and hides the thing it was run to find.
 
 ```sh
 # Curate a public stage from the notes, good for a month
@@ -124,6 +126,13 @@ curl -X POST localhost:8080/grants -H 'Content-Type: application/json' \
   -d '{"label":"Public tour","capability":"read",
        "scope":{"kind":"tag","tag":"published"},"expires_in_days":30}'
 ```
+
+Opening a share link in a browser lands on a small page that confirms the link
+is live, names the stage and how many systems it contains, and hands over the
+token with the two ways to use it — the desktop application, or `/vault?t=…` for
+the raw JSON. It cannot simply *be* the vault, because the face is a native
+application; but ending at a 404 gave the recipient no way to tell a revoked
+link from a server that was never listening.
 
 Things that follow from this design, stated rather than discovered later:
 
@@ -147,6 +156,7 @@ Things that follow from this design, stated rather than discovered later:
 ### API
 
 ```
+GET    /                                  what this server is, and how to get in
 GET    /health
 GET    /vault?user=…
 PUT    /systems/{id}                      refresh from the archive
@@ -157,6 +167,7 @@ PUT    /settings                          per grant
 POST   /seed                              admin
 GET    /events                            SSE change feed
 GET    /whoami                            what this link is and may do
+GET    /v/{token}                         the share link itself: a landing page
 GET    /grants                            admin
 POST   /grants                            admin — mints a link, shown once
 DELETE /grants/{id}                       admin — takes effect immediately
@@ -164,9 +175,18 @@ DELETE /grants/{id}                       admin — takes effect immediately
 
 ## Docker
 
+On Windows, `start.ps1` does all of the below in one step: it checks Docker is
+running, picks the first free port from 8080, waits for health rather than
+sleeping, recovers the admin link from the logs, and launches the map against
+it. `-NoFace` starts the backend only; `-Reset` wipes the vault volume first.
+
+```powershell
+.\start.ps1
+```
+
 ```sh
 docker compose up -d db server            # backend only; run the face natively
-docker compose logs server | grep "admin link"    # PowerShell: | Select-String
+docker compose logs server | grep "ADMIN LINK"    # PowerShell: | Select-String "pxv_"
 docker compose --profile app up --build   # everything, including the GUI
 docker compose --profile multi up         # two faces, to watch edits merge
 docker compose --profile tools run --rm tests
